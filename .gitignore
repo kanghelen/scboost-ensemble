@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# Tests + coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Linting + IDE
+.ruff_cache/
+.vscode/
+.idea/
+*.swp
+
+# Outputs (users can opt-in to track these)
+outputs/
+figures/
+*.h5ad
+*.npz
+*.pkl
+*.joblib
+cache/
+base_cache/
