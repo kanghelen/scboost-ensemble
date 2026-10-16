@@ -130,3 +130,84 @@ def test_cli_writes_table_and_heatmap(tiny_adata, tmp_path):
     assert fig.exists() and fig.stat().st_size > 0
     with pytest.raises(KeyError, match="not in"):
         em.main([str(h5), "--obsm_keys", "embA", "missing", "--out", str(out)])
+
+
+# ---------------------------------------------------------------------------
+# Original formulations
+# ---------------------------------------------------------------------------
+
+def test_lstsq_measure_vs_linear_fit(X):
+    Q, _ = np.linalg.qr(np.random.default_rng(5).normal(size=(8, 8)))
+    rot, shifted = 3.0 * X @ Q, 3.0 * X @ Q + 5.0
+    t = em.lstsq_measure({"x": X, "rot": rot, "shift": shifted}, verbose=False).set_index(["from", "to"])
+    assert list(t.columns[:8]) == ["n_cells", "dim_from", "dim_to", "residual_ss_total", "residual_ss_mean",
+                                   "rank", "singular_max", "singular_min"]
+    # an exact linear map is recovered by both formulations
+    assert t.loc[("x", "rot"), "residual_mean"] == pytest.approx(0.0, abs=1e-8)
+    assert t.loc[("x", "rot"), "rank"] == 8
+    assert em.linear_fit(X, rot)["r2"] == pytest.approx(1.0)
+    # the original does not center, so a shift stays in its residual; linear_fit is exact
+    assert t.loc[("x", "shift"), "residual_mean"] > 0.1
+    assert em.linear_fit(X, shifted)["r2"] == pytest.approx(1.0)
+    assert t.loc[("x", "shift"), "residual_ss_total"] == pytest.approx(8 * t.loc[("x", "shift"), "residual_ss_mean"])
+    arr = em.lstsq_measure({"x": X, "rot": rot}, return_arrays=True, verbose=False)
+    assert arr.loc[0, "transform"].shape == (8, 8) and arr.loc[0, "residuals"].shape == X.shape
+    assert arr.loc[0, "singular_values"].shape == (8,)
+
+
+def test_measure_and_residual_stats(X):
+    residuals, norms, stats = em.measure(X, X, np.eye(8))
+    assert np.allclose(residuals, 0.0) and np.allclose(norms, 0.0)
+    assert set(stats) == {"residual_mean", "residual_var", "residual_std", "residual_min",
+                          "residual_max", "residual_median"}
+    _, norms, stats = em.measure(X, 2.0 * X, np.eye(8))         # residual = X, so norms are the row norms of X
+    assert np.allclose(norms, np.linalg.norm(X, axis=1))
+    assert stats["residual_max"] >= stats["residual_median"] >= stats["residual_min"]
+
+
+def test_iterative_mapping_descends(X):
+    pytest.importorskip("torch")
+    A = np.random.default_rng(6).normal(size=(8, 8))
+    Xs, Ys = em.standardize(X), em.standardize(X @ (np.eye(8) + 0.2 * A))
+    loss_curve, W = em.iterative_mapping(Xs, Ys, max_iter=300, lr=0.05)
+    assert loss_curve.shape == (300,) and W.shape == (8, 8)
+    assert loss_curve[-1] < 0.5 * loss_curve[0]
+    _, _, stats = em.measure(Xs, Ys, W)
+    assert stats["residual_mean"] == pytest.approx(loss_curve[-1], abs=0.02)   # the loss is the mean residual norm
+    # identical embeddings start at the optimum and stay finite there (zero gradient at zero norm)
+    curve0, W0 = em.iterative_mapping(Xs, Xs, max_iter=5, lr=0.01)
+    assert curve0[0] == pytest.approx(0.0, abs=1e-6) and np.isfinite(W0).all()
+    # unequal widths: rectangular identity start
+    _, W_rect = em.iterative_mapping(Xs, Ys[:, :4], max_iter=3, lr=0.01)
+    assert W_rect.shape == (8, 4)
+
+
+def test_iterative_map_test_and_compare_formulations(X):
+    pytest.importorskip("torch")
+    Q, _ = np.linalg.qr(np.random.default_rng(7).normal(size=(8, 8)))
+    emb = {"a": X, "rot": X @ Q, "noise": np.random.default_rng(8).normal(size=X.shape)}
+    it = em.iterative_map_test(emb, max_iter=30, lr=0.05, verbose=False)
+    assert len(it) == 6 and (it["n_iter"] == 30).all() and (it["lr"] == 0.05).all()
+    assert (it["final_loss"] <= it["initial_loss"] + 1e-6).all()
+    assert "loss_curve" not in it.columns
+    merged = em.compare_formulations(emb, max_iter=30, lr=0.05, verbose=False).set_index(["from", "to"])
+    assert len(merged) == 6
+    for c in ["cka", "r2", "residual_mean", "lstsq_residual_mean", "lstsq_rank", "iterative_n_iter",
+              "iterative_lr", "iterative_initial_loss", "iterative_final_loss", "iterative_residual_mean"]:
+        assert c in merged.columns
+    assert (merged["iterative_n_iter"] == 30).all() and (merged["iterative_lr"] == 0.05).all()
+    assert merged.loc[("a", "rot"), "r2"] == pytest.approx(1.0)
+    assert merged.loc[("a", "rot"), "lstsq_residual_mean"] == pytest.approx(0.0, abs=1e-8)
+    assert merged.loc[("a", "rot"), "iterative_final_loss"] < merged.loc[("a", "rot"), "iterative_initial_loss"]
+    assert merged.loc[("a", "noise"), "iterative_final_loss"] > merged.loc[("a", "rot"), "iterative_final_loss"]
+
+
+def test_cli_originals(tiny_adata, tmp_path):
+    pytest.importorskip("torch")
+    h5 = tmp_path / "tiny.h5ad"
+    tiny_adata.write_h5ad(h5)
+    out = tmp_path / "all.tsv"
+    em.main([str(h5), "--out", str(out), "--originals", "--max_iter", "10", "--max_cells", "150"])
+    t = pd.read_csv(out, sep="\t")
+    assert len(t) == 2 and (t["n_cells"] == 150).all()
+    assert {"lstsq_residual_mean", "iterative_final_loss", "iterative_residual_mean"} <= set(t.columns)
