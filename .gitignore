@@ -35,3 +35,6 @@ figures/
 *.joblib
 cache/
 base_cache/
+
+# Claude Code worktrees
+.claude/
