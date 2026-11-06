@@ -37,6 +37,14 @@ umap = ["umap-learn>=0.5"]
 # torch is imported lazily, so the package installs and runs without it. It is required
 # only for --base_algo mlp and the --meta_algo torch_* learners.
 torch = ["torch>=2.0"]
+# scboost_ensemble.reference_model: the pretrained reference model (fit, save, load, project)
+reference = [
+    "torch>=2.0",
+    "scvi-tools>=1.1",
+    "scikit-misc>=0.3",
+    "h5py>=3.8",
+    "pyarrow>=14",
+]
 dev = [
     "pytest>=7",
     "pytest-cov",

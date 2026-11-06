@@ -137,6 +137,69 @@ ignore` retrains instead. Legacy entries have no fingerprint, so a same-width
 content change in one of them cannot be detected — use a fresh cache directory
 with `--strict_cache` when that matters.
 
+## Pretrained reference model
+
+`scboost_ensemble.reference_model` (added in 0.3.0) fits scBoost once on a labelled
+reference, saves every fitted object, and places new query cells without refitting
+anything on them. Three embeddings can embed new cells, so the model uses those
+three:
+
+- **PCA**: 100 components on log1p(counts normalised to 10,000) of 3,000 reference HVGs.
+- **NMF**: 100 components on the same matrix. The gene basis is kept, and query cells are
+  solved against it.
+- **scVI**: 30 latent dimensions on 2,000 reference HVGs. Query cells are placed by
+  scArches surgery, with each query donor added as a new batch.
+
+On these three embeddings sit 3 (embeddings) × 5 (folds) = 15 MLP base classifiers and
+5 meta-learners, one per fold. The folds are grouped by donor (`scboost_ensemble.folds`).
+
+The model trained on Tabula Sapiens 2.0 (637,267 cells, 167 cell types) is
+available at **[Zenodo DOI to be added]**.
+
+```bash
+pip install -e ".[reference]"
+```
+
+```python
+import anndata as ad
+from scboost_ensemble.reference_model import ReferenceModel
+
+model = ReferenceModel.load("ts_v2_full", device="cpu")    # or "cuda:0"
+query = ad.read_h5ad("query.h5ad")    # raw counts in X; var_names are Ensembl gene IDs
+res = model.project(query, donor_key="donor_id")
+labels = res["label"]["xgboost"]      # one of the 167 reference cell types per cell
+proba = res["proba"]["xgboost"]       # (n_cells, 167)
+```
+
+- **Genes** are matched on Ensembl ID, with any version suffix removed. Reference genes
+  that the query lacks are filled with zeros. `project` stops if a query lacks more than
+  10% of either HVG list; pass `allow_missing=True` to proceed anyway.
+- **Counts** can also come from a layer (`counts_layer="counts"`) or from
+  `raw.X` (`counts_layer="raw"`).
+- **Meta-learners.** Two are saved: `xgboost`, which the manuscript reports, and
+  `torch_logreg_en`. `res["compartment_label"]` gives the coarse compartment of each call.
+- **Speed.** scVI surgery is the slow step: about 2 minutes per 10,000 cells on one
+  A100 GPU, measured on 734,078 cells.
+- **CPU and GPU.** The two give the same labels. Their xgboost probabilities can differ
+  in the third decimal place: on 14,291 query cells the largest difference was 0.0036,
+  with every label identical. The manuscript's results were computed on a GPU, and on a
+  GPU the package reproduces them exactly.
+- **`ref_embeddings/`** holds the reference cells' own embeddings. Projection does not
+  need it, so it can be left out of a download.
+
+To fit your own reference, pass raw counts in `X` and the columns `trained_label`,
+`donor_id` and `batch` in `obs`:
+
+```python
+model = ReferenceModel(device="cuda:0").fit(ref)
+model.set_compartments(compartment_of_each_label)    # pandas Series: label -> compartment
+model.save("my_model")
+```
+
+`ReferenceModel(class_weight_beta=b)` trains every learner with class weights
+w_c ∝ n_c^(−b) (`scboost_ensemble.balanced`). b = 0 reproduces the unweighted
+model exactly, and b = 1 gives every class the same total weight.
+
 ## Helpers for input construction
 
 When inputs come from a third-party annotator (e.g. popV) saved as `.npz`:
