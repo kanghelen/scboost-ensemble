@@ -106,6 +106,8 @@ def cmd_fit(args):
         base_algo=args.base_algo, algo_params=algo_params,
         seed=args.seed,
         base_cache_dir=args.base_cache_dir,
+        legacy_cache=args.legacy_cache,
+        strict_cache=args.strict_cache,
     )
     stacker.fit(train)
     t_fit = time.time()
@@ -234,6 +236,14 @@ def main(argv=None):
     f.add_argument("--gpu", type=int, default=None)
     f.add_argument("--n_gpus", type=int, default=1)
     f.add_argument("--base_cache_dir", default=None)
+    f.add_argument("--legacy_cache", default="adopt", choices=["adopt", "ignore"],
+                   help="Reuse pre-0.3.0 cache entries (no width in the name) when "
+                        "the stored model's input width matches the embedding. "
+                        "'ignore' retrains instead.")
+    f.add_argument("--strict_cache", action="store_true",
+                   help="Treat a cache entry whose recorded content hash disagrees "
+                        "with the current embedding as a miss rather than a warning. "
+                        "Recommended for published runs.")
     f.add_argument("--save_model", action="store_true")
     f.set_defaults(func=cmd_fit)
 

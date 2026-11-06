@@ -22,6 +22,7 @@ Public class: ``StackingEnsembleDonorMetaCached``.
 
 from __future__ import annotations
 
+import os
 import time
 import json
 import hashlib
@@ -61,16 +62,47 @@ def _short_sha(obj_str: str, n: int = 16) -> str:
     return hashlib.sha1(obj_str.encode()).hexdigest()[:n]
 
 
+def _sha_buf(buf, n: int = 16) -> str:
+    """Same truncated-sha1 convention as ``_short_sha``, over a raw buffer.
+
+    Used to fingerprint an embedding matrix. sha1 is the fastest stdlib digest
+    on SHA-NI hardware (~1 GB/s here, vs ~0.7 GB/s for blake2b); collision
+    resistance against a deliberate attacker is irrelevant for a local cache."""
+    return hashlib.sha1(buf).hexdigest()[:n]
+
+
+def _model_n_features(clf) -> Optional[int]:
+    """Input width a cached base learner expects, or None if undiscoverable.
+
+    Covers every classifier that reaches the cache: XGBClassifier
+    (``n_features_in_``), TorchBaseClassifier (``D_``), and either of those
+    wrapped in GlobalProbsWrapper when a donor fold lacks rare cell types."""
+    inner = getattr(clf, "clf", clf)          # unwrap GlobalProbsWrapper
+    for attr in ("n_features_in_", "D_"):
+        val = getattr(inner, attr, None)
+        if val is not None:
+            return int(val)
+    return None
+
+
 def _build_cache_dirname(
     key: str, algo: str, fold_k: int,
     cv_scheme: str, n_folds: int, early_stop: int,
     algo_params: dict, label_classes: list, train_cell_ids: list,
+    n_features: Optional[int] = None,
 ) -> str:
+    """Cache directory name for one (embedding, fold) base learner.
+
+    ``n_features`` adds a ``d{N}`` segment so that two embeddings sharing an
+    obsm key name at different widths (e.g. a 100-d PCA and a 50-d one) can
+    never resolve to the same entry. Passing None reproduces the pre-0.3.0
+    name, which is how legacy entries are located for adoption."""
     params_hash  = _short_sha(json.dumps(algo_params, sort_keys=True, default=str))
     classes_hash = _short_sha(",".join(map(str, sorted(label_classes))))
     train_hash   = _short_sha(",".join(map(str, sorted(map(str, train_cell_ids)))))
     safe_key = key.replace(":", "_").replace("+", "-")
-    return (f"{safe_key}__{algo}__fold{fold_k}__{cv_scheme}{n_folds}__"
+    dim = f"__d{int(n_features)}" if n_features is not None else ""
+    return (f"{safe_key}__{algo}__fold{fold_k}{dim}__{cv_scheme}{n_folds}__"
             f"es{early_stop}__p{params_hash}__c{classes_hash}__t{train_hash}")
 
 
@@ -99,6 +131,8 @@ class StackingEnsembleDonorMetaCached:
         base_algo: str = "xgboost",
         seed: int = 42,
         base_cache_dir: Optional[str] = None,
+        legacy_cache: str = "adopt",
+        strict_cache: bool = False,
     ):
         """
         Parameters
@@ -116,6 +150,15 @@ class StackingEnsembleDonorMetaCached:
         base_cache_dir : str or None
             Directory for caching base classifier outputs across runs.
             If None, caching is disabled.
+        legacy_cache : {"adopt", "ignore"}
+            What to do with cache entries written before 0.3.0, whose directory
+            names carry no width segment. "adopt" (default) reuses one when the
+            stored model's input width matches the current embedding, and
+            symlinks it under the new name; "ignore" retrains instead.
+        strict_cache : bool
+            If True, a cache entry whose recorded ``content_sha`` disagrees with
+            the current embedding is treated as a miss rather than a warning.
+            Recommended for runs whose numbers are published.
         """
         self.obsm_keys             = list(obsm_keys)
         self.label_key             = label_key
@@ -128,6 +171,10 @@ class StackingEnsembleDonorMetaCached:
         self.n_gpus                = n_gpus
         self.seed                  = seed
         self.base_cache_dir        = Path(base_cache_dir) if base_cache_dir else None
+        if legacy_cache not in ("adopt", "ignore"):
+            raise ValueError(f"legacy_cache must be adopt|ignore, got {legacy_cache!r}")
+        self.legacy_cache          = legacy_cache
+        self.strict_cache          = bool(strict_cache)
 
         if device.startswith("cuda"):
             parts = device.split(":")
@@ -185,7 +232,9 @@ class StackingEnsembleDonorMetaCached:
         self.meta_best_iterations_: List[int]          = []
         self._batch_enc: Optional[OneHotEncoder]       = None
         self.train_support_: Optional[Dict[str, int]]  = None
-        self.cache_stats_                              = {"hits": 0, "misses": 0}
+        self._emb_sha_: Dict[str, str]                 = {}
+        # legacy_adopted is a sub-count of hits, not a third disjoint category
+        self.cache_stats_ = {"hits": 0, "misses": 0, "legacy_adopted": 0}
 
         print(f"[StackingDonorMetaCached] obsm_keys={self.obsm_keys}, "
               f"cv_scheme={cv_scheme}, n_folds={n_folds}, "
@@ -219,6 +268,64 @@ class StackingEnsembleDonorMetaCached:
     # Per-fold base learner training (with cache lookup)
     # ------------------------------------------------------------------
 
+    def _check_content_sha(self, cache_dir: Path, key: str) -> bool:
+        """False if this entry should be treated as a miss.
+
+        Entries written before 0.3.0 record no ``content_sha``, so they pass
+        silently — which is what keeps them adoptable."""
+        want = self._emb_sha_.get(key)
+        if not want:
+            return True
+        try:
+            with open(cache_dir / "manifest.json") as f:
+                got = json.load(f).get("content_sha")
+        except Exception:
+            return True
+        if not got or got == want:
+            return True
+        print(f"  [cache] WARN: '{key}' content changed since {cache_dir.name} was "
+              f"written ({got} -> {want})"
+              f"{'; retraining (strict_cache)' if self.strict_cache else ''}")
+        return not self.strict_cache
+
+    def _load_cache_entry(self, cache_dir: Path, key: str, n_features: int):
+        """Return a cached ``(clf, va_proba, best_iter)``, or None to retrain.
+
+        Rejects an entry whose model was trained at a different input width —
+        the guard that catches a hand-copied cache or any future key-scheme
+        slip, independently of the directory name."""
+        model_path = cache_dir / "model.joblib"
+        va_path    = cache_dir / "va_proba.npz"
+        if not (model_path.exists() and va_path.exists()):
+            return None
+        try:
+            clf = joblib.load(model_path)
+            width = _model_n_features(clf)
+            if width is not None and width != n_features:
+                print(f"  [cache] WARN: {cache_dir.name} holds a {width}-d model but "
+                      f"'{key}' is {n_features}-d; retraining")
+                return None
+            if not self._check_content_sha(cache_dir, key):
+                return None
+            npz = np.load(va_path, allow_pickle=False)
+            return clf, npz["proba"], int(npz["best_iter"])
+        except Exception as e:
+            print(f"  [cache] WARN: corrupt cache at {cache_dir}; rebuilding ({e})")
+            return None
+
+    def _adopt_legacy(self, legacy_dir: Path, new_dir: Path) -> None:
+        """Point the width-qualified name at a legacy entry so later runs hit it
+        directly. Best-effort — a read-only cache tree is not an error, and the
+        entry has already been loaded either way."""
+        try:
+            new_dir.parent.mkdir(parents=True, exist_ok=True)
+            # realpath so we never build a chain of symlinks
+            os.symlink(os.path.realpath(legacy_dir), new_dir)
+        except FileExistsError:
+            pass
+        except OSError as e:
+            print(f"  [cache] WARN: could not link {new_dir.name} to legacy entry ({e})")
+
     def _train_one_base_fold(
         self,
         key: str, fold_k: int, X: np.ndarray, labels: np.ndarray,
@@ -227,26 +334,29 @@ class StackingEnsembleDonorMetaCached:
     ):
         cache_status = "disabled"
         cache_dir = None
+        n_features = int(X.shape[1])
         if self.base_cache_dir is not None:
-            cache_name = _build_cache_dirname(
+            name_kw = dict(
                 key=key, algo=self.algo, fold_k=fold_k,
                 cv_scheme=self.cv_scheme, n_folds=self.n_folds,
                 early_stop=self.early_stopping_rounds,
                 algo_params=self.algo_params, label_classes=label_classes,
                 train_cell_ids=train_cell_ids,
             )
-            cache_dir = self.base_cache_dir / cache_name
-            model_path = cache_dir / "model.joblib"
-            va_path    = cache_dir / "va_proba.npz"
-            if model_path.exists() and va_path.exists():
-                try:
-                    clf = joblib.load(model_path)
-                    npz = np.load(va_path, allow_pickle=False)
-                    va_proba = npz["proba"]
-                    best_iter = int(npz["best_iter"])
-                    return clf, va_proba, best_iter, "hit"
-                except Exception as e:
-                    print(f"  [cache] WARN: corrupt cache at {cache_dir}; rebuilding ({e})")
+            cache_dir = self.base_cache_dir / _build_cache_dirname(
+                **name_kw, n_features=n_features)
+            loaded = self._load_cache_entry(cache_dir, key, n_features)
+            if loaded is not None:
+                return (*loaded, "hit")
+
+            # Pre-0.3.0 entries carry no width segment. Adopt one only if the
+            # model it holds was trained at this exact width.
+            if self.legacy_cache == "adopt":
+                legacy_dir = self.base_cache_dir / _build_cache_dirname(**name_kw)
+                loaded = self._load_cache_entry(legacy_dir, key, n_features)
+                if loaded is not None:
+                    self._adopt_legacy(legacy_dir, cache_dir)
+                    return (*loaded, "adopt")
             cache_status = "miss"
 
         # ---- Train ----
@@ -310,6 +420,8 @@ class StackingEnsembleDonorMetaCached:
                         "cv_scheme": self.cv_scheme, "n_folds": self.n_folds,
                         "early_stopping_rounds": self.early_stopping_rounds,
                         "n_classes": n_classes,
+                        "n_features": n_features,
+                        "content_sha": self._emb_sha_.get(key),
                         "n_train": int(len(tr_idx)), "n_val": int(len(va_idx)),
                         "best_iteration": best_iter,
                     }, f, indent=2)
@@ -336,6 +448,17 @@ class StackingEnsembleDonorMetaCached:
             folds = list(cv.split(np.zeros((len(labels), 1)), labels))
             print(f"  CV: StratifiedKFold(n={self.n_folds})")
         return folds
+
+    def _tally_cache(self, cstat: str) -> None:
+        """An adopted legacy entry skipped training, so it counts as a hit; the
+        separate counter records how many of those hits came from adoption."""
+        if cstat == "hit":
+            self.cache_stats_["hits"] += 1
+        elif cstat == "adopt":
+            self.cache_stats_["hits"] += 1
+            self.cache_stats_["legacy_adopted"] += 1
+        elif cstat == "miss":
+            self.cache_stats_["misses"] += 1
 
     def _oof_with_folds(self, embs, labels, batch, cell_ids):
         n, C = len(labels), self.n_cell_types
@@ -381,7 +504,7 @@ class StackingEnsembleDonorMetaCached:
                     self.base_best_iterations_[key][fk] = best_iter
                     cs, ce = ki * C, (ki + 1) * C
                     meta_oof[va, cs:ce] = va_proba.astype(np.float32)
-                    self.cache_stats_["hits" if cstat == "hit" else "misses"] += (cstat in ("hit", "miss"))
+                    self._tally_cache(cstat)
                     print(f"    [{cstat:5s}] {key} fold{fk} best_iter={best_iter}")
             print(f"  All base classifiers done ({time.time()-t_par:.1f}s wall)")
         else:
@@ -394,7 +517,7 @@ class StackingEnsembleDonorMetaCached:
                 self.base_best_iterations_[key][fk] = best_iter
                 cs, ce = ki * C, (ki + 1) * C
                 meta_oof[va, cs:ce] = va_proba.astype(np.float32)
-                self.cache_stats_["hits" if cstat == "hit" else "misses"] += (cstat in ("hit", "miss"))
+                self._tally_cache(cstat)
                 print(f"    [{cstat:5s}] {key} fold{fk} best_iter={best_iter}")
 
         return meta_oof, fold_assignments
@@ -421,6 +544,11 @@ class StackingEnsembleDonorMetaCached:
         """Train base classifiers (with caching) + 5 donor-aware meta-learners."""
         t_start = time.time()
         embs, labels, batch, cell_ids = self._extract(adata)
+        # One fingerprint per embedding per fit (not per fold): ~0.3 s for seven
+        # 100-d embeddings on 100k cells. Recorded in each cache manifest so a
+        # later run can tell that an obsm key kept its name but changed content.
+        self._emb_sha_ = {k: _sha_buf(np.ascontiguousarray(v).data)
+                          for k, v in embs.items()}
         enc_labels = self.label_encoder_.fit_transform(labels)
         self.n_cell_types = len(self.label_encoder_.classes_)
 
@@ -476,8 +604,10 @@ class StackingEnsembleDonorMetaCached:
                   f"val={in_fold_k.sum()}, n_local={n_local}/{C}, "
                   f"best_iter={best_iter}{note}")
 
+        adopted = self.cache_stats_["legacy_adopted"]
         print(f"\nFit complete ({time.time()-t_start:.1f}s)  "
-              f"cache: {self.cache_stats_['hits']} hits, {self.cache_stats_['misses']} misses")
+              f"cache: {self.cache_stats_['hits']} hits, {self.cache_stats_['misses']} misses"
+              + (f" ({adopted} adopted from legacy entries)" if adopted else ""))
         return self
 
     def _fit_one_meta(self, X_tr, y_tr_local, X_va_es, y_va_local, n_local):

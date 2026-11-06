@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scboost-ensemble"
-version = "0.2.0"
+version = "0.3.0"
 description = "Donor-aware stacking ensemble for scRNA-seq cell-type classification, with 5 leakage-resistant meta-learners, pluggable base/meta learners, and per-fold base classifier caching."
 readme = "README.md"
 license = {file = "LICENSE"}

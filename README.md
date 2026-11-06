@@ -103,6 +103,40 @@ Outputs:
 - `<sample>_runtime.tsv` — per-phase wall time
 - `<sample>_split.tsv` — train/test assignment
 
+## Base-learner cache
+
+Each (embedding, fold) training is stored under a directory named for everything
+that determines it:
+
+```
+Geoksketch__xgboost__fold0__d100__donor5__es10__p<params>__c<classes>__t<train_ids>
+                            ^^^^ input width
+```
+
+The `d{N}` width segment (added in 0.3.0) is what keeps a 100-d embedding and a
+50-d one from colliding when they share an obsm key name. Two further guards sit
+behind it:
+
+- **Width guard.** Before a cached model is used, its expected input width is
+  compared against the embedding in hand; a mismatch retrains rather than failing
+  at predict time.
+- **Content fingerprint.** Each entry records a `content_sha` of the matrix it was
+  trained on. If an embedding changes while keeping both its name *and* its width,
+  the run warns. Pass `--strict_cache` to treat that as a miss instead —
+  recommended for any run whose numbers you publish, since a warning is otherwise
+  easy to miss in a long sweep log.
+
+**The naming discipline that avoids all of this:** give each version of an
+embedding its own obsm key (`Python_PCA_50d`, `Python_PCA_100d`) rather than
+re-deriving one in place under an existing name.
+
+Entries written before 0.3.0 carry no width segment. They are reused when the
+model inside matches the current width, and symlinked under the new name
+(counted as `legacy_adopted` within `cache_stats_["hits"]`); `--legacy_cache
+ignore` retrains instead. Legacy entries have no fingerprint, so a same-width
+content change in one of them cannot be detected — use a fresh cache directory
+with `--strict_cache` when that matters.
+
 ## Helpers for input construction
 
 When inputs come from a third-party annotator (e.g. popV) saved as `.npz`:

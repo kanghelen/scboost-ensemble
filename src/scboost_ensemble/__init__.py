@@ -1,6 +1,6 @@
 """scboost-ensemble — donor-aware stacking ensemble for scRNA-seq cell-type classification."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .stacking import StackingEnsembleDonorMetaCached
 from .inputs import build_latents_h5ad, build_concat_h5ad, build_probs_h5ad
