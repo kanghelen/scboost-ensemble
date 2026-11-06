@@ -182,8 +182,9 @@ proba = res["proba"]["xgboost"]       # (n_cells, 167)
   A100 GPU, measured on 734,078 cells.
 - **CPU and GPU.** The two give the same labels. Their xgboost probabilities can differ
   in the third decimal place: on 14,291 query cells the largest difference was 0.0036,
-  with every label identical. The manuscript's results were computed on a GPU, and on a
-  GPU the package reproduces them exactly.
+  with every label identical. The manuscript's results were computed on an A100 GPU. The
+  package reproduces them exactly when the same cells are rerun on the same GPU type; a
+  different number of cells or a different device changes floating-point kernels slightly.
 - **`ref_embeddings/`** holds the reference cells' own embeddings. Projection does not
   need it, so it can be left out of a download.
 

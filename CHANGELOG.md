@@ -23,8 +23,8 @@ applied to new datasets:
 Fitting and projection are unchanged. These checks used the manuscript's
 `ts_v2_full` model and the saved embeddings of 14,291 Plaque Atlas cells:
 
-- On a GPU, the package reproduces the saved manuscript probabilities bit for bit,
-  for both meta-learners.
+- Rerun on the same cells and the same A100 GPU type, the package reproduces the saved
+  manuscript probabilities bit for bit, for both meta-learners.
 - On the CPU and on the GPU, the package's outputs are bit-identical to the
   analysis code's.
 
