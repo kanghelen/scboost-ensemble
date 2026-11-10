@@ -1,7 +1,8 @@
 # scboost-ensemble
 
-Donor-aware **stacking ensemble** for scRNA-seq cell-type classification, with
-two architectural features beyond textbook stacking:
+**stacking ensemble** for scRNA-seq cell-type classification using multiple different cell embeddings as input. 
+
+We implement two architectural features that improves method performance:
 
 1. **5 leakage-resistant meta-learners** — each meta-learner trains on out-of-fold
    predictions for cells *not* in its donor-group fold, and uses cells *in* its
