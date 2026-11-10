@@ -42,7 +42,10 @@ embeddings.
 
 ## 0.2.0
 
-The stacking engine used for every result in the scBoost manuscript (tag `v0.2.0`).
-`stacking.py` has md5 `c78a0c1b2bd33ca026d0880081122c1e`. The 0.3.0 release leaves
+The stacking engine (tag `v0.2.0`, `stacking.py` md5 `c78a0c1b2bd33ca026d0880081122c1e`) used for
+most of the scBoost manuscript's results: the embedding-combination sweep, the same-input comparison
+with popV, the foundation-model embeddings, OpenProblems and the pretrained model. The first benchmark
+runs, including scBoost against popV's consensus on the four benchmark datasets, used earlier code
+whose base learner is XGBoost only. The 0.3.0 release leaves
 `torch_base`, `torch_meta`, `meta_learners`, `eval`, `inputs`, `splits` and `_xgb_utils`
 unchanged.
