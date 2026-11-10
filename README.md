@@ -1,32 +1,10 @@
 # scboost-ensemble
 
-scboost-ensemble is a stacking ensemble for cell-type classification in single-cell
-RNA-seq data. It takes several different cell embeddings as input, such as scVI,
-Harmony and Scanorama. It trains one classifier on each embedding, and a meta-learner
-then combines their predictions into a single cell-type call. This package is the
+scboost-ensemble is a stacking ensemble for cell-type classification in single-cell  
+RNA-seq data. It takes several different cell embeddings as input, such as Scanorama, PCA, SCA, scVI, and  
+Harmony. It trains one classifier on each embedding, and a meta-learner  
+then combines their predictions into a single cell-type call. This package is the  
 software behind scBoost.
-
-## How it works
-
-For each embedding, a base classifier (XGBoost or a small neural network) predicts
-the probability of every cell type for every cell. A meta-learner then learns how to
-combine these probabilities. We implement two features that improve on standard
-stacking:
-
-1. **Five donor-aware meta-learners.** The training cells are split into five folds,
-   and with `cv_scheme="donor"` all cells of a donor stay in the same fold.
-   Meta-learner *k* is trained on the out-of-fold predictions for the cells outside
-   fold *k*, and the cells in fold *k* are used only to decide when to stop training.
-   Because fold *k* holds donors the meta-learner has not seen, training stops at a
-   point that carries over to new donors rather than one tuned to the training donors.
-   At prediction time, the outputs of the five meta-learners are averaged.
-2. **Cached base classifiers.** Each base classifier, one per embedding and fold, is
-   saved to disk under a name derived from everything that determines its training:
-   the embedding, the learner and its settings, the fold, the cell types and the
-   training cells. A later run that needs the same classifier loads it instead of
-   training it again. In experiments that compare many combinations of embeddings,
-   where the same base classifier appears in many runs, this makes the runs about
-   5 to 10 times faster.
 
 ## Installation
 
@@ -50,11 +28,33 @@ XGBoost uses it when you pass `device="cuda:0"` in Python or `--gpu 0` on the
 command line. PyTorch is imported only when a learner needs it, so the package installs
 and runs without it.
 
+## How it works
+
+For each embedding, a base classifier (XGBoost or a small neural network) predicts  
+the probability of every cell type for every cell. A meta-learner then learns how to  
+combine these probabilities. We implement two features that improve on standard  
+stacking:
+
+1. **Five donor-aware meta-learners.** The training cells are split into K folds (here, we use 5 folds),
+
+   and with `cv_scheme="donor"` all cells of a donor stay in the same fold.  
+    Meta-learner *k* is trained on the out-of-fold predictions for the cells outside  
+    fold *k*, and the cells in fold *k* are used only to decide when to stop training.  
+    Because fold *k* holds donors that the meta-learner has not seen, training stops at a  
+    point that carries over to new donors rather than one tuned to the training donors.  
+    At prediction time, the outputs of the five meta-learners are averaged.
+2. **Cached base classifiers.** Each base classifier, one per embedding and fold, is
+
+   saved to disk under a name derived from everything that determines its training:  
+    the embedding, the learner and its settings, the fold, the cell types and the  
+    training cells. A later run that needs the same classifier loads it instead of  
+    training it again. In experiments that compare many combinations of embeddings, this makes the runs much faster.
+
 ## Quick start in Python
 
 The input is an AnnData object whose `.obsm` holds one dense matrix per embedding. Its
 `.obs` holds the cell-type labels, a donor (or batch) column, and a `split` column with
-the values `train` and `test`. The class does not split the data itself: you pass the
+the values `train` and `test`. The class does not split the data itself: please pass the  
 training cells to `fit` and the cells to classify to `predict`.
 
 ```python
@@ -66,7 +66,7 @@ train = adata[adata.obs["split"] == "train"].copy()
 test = adata[adata.obs["split"] == "test"].copy()
 
 stacker = StackingEnsembleDonorMetaCached(
-    obsm_keys=["scVI", "Harmony", "Scanorama"],  # one base classifier per embedding
+    obsm_keys=["Scanorama", "PCA", "SCA", "scVI", "Harmony"],  # one base classifier per embedding
     label_key="cell_type",
     batch_key="donor_id",       # the folds are grouped by this column
     cv_scheme="donor",          # keep all cells of a donor in one fold
@@ -125,10 +125,10 @@ The run writes these files to `--out_dir`:
 
 ## Choosing the base and meta-learners
 
-Both levels of the stack can be swapped, and the choice can matter. On
-high-dimensional embeddings, such as foundation-model embeddings with 512 to 2,048
-dimensions, an MLP base learner can beat XGBoost by 2 percentage points or more. On
-100-dimensional batch-corrected embeddings, the two are close, and which one is better
+The base learners and meta learners can be customized. On  
+high-dimensional embeddings, such as foundation-model embeddings with 512 to 2,048  
+dimensions, an MLP base learner can beat XGBoost by 2 percentage points or more. On  
+100-dimensional batch-corrected embeddings, the two are close, and which one is better  
 depends on the dataset. Please consider trying both MLP and XGBoost on your data.
 
 | option | choices | notes |
@@ -162,6 +162,7 @@ Geoksketch__xgboost__fold0__d100__donor5__es10__p<params>__c<classes>__t<train_i
 ```
 
 From left to right, the name gives:
+
 - the embedding;
 - the base learner;
 - the fold;
@@ -175,14 +176,14 @@ when they share an `.obsm` name. Two further checks guard against reusing the wr
 classifier:
 
 - **Width check.** Before a cached classifier is used, the number of dimensions it was
-  trained on is compared with the current embedding. If they differ, the classifier is
-  retrained rather than failing at prediction time.
+trained on is compared with the current embedding. If they differ, the classifier is
+retrained rather than failing at prediction time.
 - **Content check.** Each cache entry records a fingerprint (`content_sha`) of the matrix
-  it was trained on. If an embedding changes but keeps both its name and its width, the
-  run prints a warning. With `--strict_cache` (`strict_cache=True` in Python), the
-  entry is treated as missing and the classifier is retrained instead. We recommend
-  `--strict_cache` for any run whose results you will publish, because a warning is
-  easy to miss in a long log.
+it was trained on. If an embedding changes but keeps both its name and its width, the
+run prints a warning. With `--strict_cache` (`strict_cache=True` in Python), the
+entry is treated as missing and the classifier is retrained instead. We recommend
+`--strict_cache` for any run whose results you will publish, because a warning is
+easy to miss in a long log.
 
 The simplest way to avoid these problems is to give each version of an embedding its
 own name in `.obsm`, such as `Python_PCA_50d` and `Python_PCA_100d`, rather than
@@ -204,12 +205,12 @@ query cells without retraining anything. Only three of the usual embeddings can 
 new cells in a fixed space, so the reference model uses those three:
 
 - **PCA**: 100 components. They are computed on the 3,000 most variable genes of the
-  reference, after each cell is normalised to 10,000 counts and log-transformed.
+reference, after each cell is normalised to 10,000 counts and log-transformed.
 - **NMF**: 100 components on the same matrix. The gene programs are kept fixed, and each
-  query cell is expressed in terms of them.
+query cell is expressed in terms of them.
 - **scVI**: 30 latent dimensions, trained on the 2,000 most variable genes of the
-  reference. Query cells are added by scArches surgery, which treats each query donor as
-  a new batch.
+reference. Query cells are added by scArches surgery, which treats each query donor as
+a new batch.
 
 Each embedding has five base classifiers, one per fold, so the model holds
 3 (embeddings) × 5 (folds) = 15 MLP base classifiers and five meta-learners. The folds
@@ -235,24 +236,24 @@ proba = res["proba"]["xgboost"]       # probabilities, shape (n_cells, 167)
 ```
 
 - **Genes.** Query genes are matched to the reference by Ensembl ID, ignoring version
-  suffixes such as `.5`. Reference genes that the query lacks are set to zero. If the
-  query lacks more than 10% of either list of variable genes, `project` stops with an
-  error; pass `allow_missing=True` to continue anyway.
+suffixes such as `.5`. Reference genes that the query lacks are set to zero. If the
+query lacks more than 10% of either list of variable genes, `project` stops with an
+error; pass `allow_missing=True` to continue anyway.
 - **Counts.** `project` reads raw counts from `X` by default. Use `counts_layer="counts"`
-  to read a layer, or `counts_layer="raw"` to read `raw.X`.
+to read a layer, or `counts_layer="raw"` to read `raw.X`.
 - **Outputs.** `project` returns the predictions of two meta-learners: `xgboost`, which
-  the scBoost manuscript reports, and `torch_logreg_en`. `res["compartment_label"]` gives
-  each cell's broad compartment, such as Immune or Endothelium.
+the scBoost manuscript reports, and `torch_logreg_en`. `res["compartment_label"]` gives
+each cell's broad compartment, such as Immune or Endothelium.
 - **Speed.** The scVI surgery takes most of the time, about 2 minutes per 10,000 cells
-  on one A100 GPU.
+on one A100 GPU.
 - **CPU or GPU.** Both give the same labels. The probabilities from the XGBoost
-  meta-learner can differ slightly: on 14,291 query cells, the largest difference was
-  0.0036, and every label agreed. The manuscript's results were computed on an A100 GPU,
-  and rerunning the same cells on the same type of GPU reproduces them exactly. A
-  different device or a different number of cells changes the floating-point arithmetic
-  slightly.
+meta-learner can differ slightly: on 14,291 query cells, the largest difference was
+0.0036, and every label agreed. The manuscript's results were computed on an A100 GPU,
+and rerunning the same cells on the same type of GPU reproduces them exactly. A
+different device or a different number of cells changes the floating-point arithmetic
+slightly.
 - **Download size.** The folder `ref_embeddings/` holds the embeddings of the reference
-  cells themselves. `project` does not use it, so you can leave it out of the download.
+cells themselves. `project` does not use it, so you can leave it out of the download.
 
 To train your own reference model, pass an AnnData object with raw counts in `X` and
 three columns in `.obs`: `trained_label` (the cell type), `donor_id` and `batch`.
