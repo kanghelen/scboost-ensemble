@@ -38,3 +38,6 @@ base_cache/
 
 # Claude Code worktrees
 .claude/
+
+# macOS resource forks
+._*

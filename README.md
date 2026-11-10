@@ -1,9 +1,9 @@
 # scboost-ensemble
 
-scboost-ensemble is a stacking ensemble for cell-type classification in single-cell  
-RNA-seq data. It takes several different cell embeddings as input, such as Scanorama, PCA, SCA, scVI, and  
-Harmony. It trains one classifier on each embedding, and a meta-learner  
-then combines their predictions into a single cell-type call. This package is the  
+scboost-ensemble is a stacking ensemble for cell-type classification in single-cell
+RNA-seq data. It takes several different cell embeddings as input, such as Scanorama, PCA, SCA, scVI, and
+Harmony. It trains one classifier on each embedding, and a meta-learner
+then combines their predictions into a single cell-type call. This package is the
 software behind scBoost.
 
 ## Installation
@@ -30,31 +30,30 @@ and runs without it.
 
 ## How it works
 
-For each embedding, a base classifier (XGBoost or a small neural network) predicts  
-the probability of every cell type for every cell. A meta-learner then learns how to  
-combine these probabilities. We implement two features that improve on standard  
+For each embedding, a base classifier (XGBoost or a small neural network) predicts
+the probability of every cell type for every cell. A meta-learner then learns how to
+combine these probabilities. We implement two features that improve on standard
 stacking:
 
-1. **Five donor-aware meta-learners.** The training cells are split into K folds (here, we use 5 folds),
-
-   and with `cv_scheme="donor"` all cells of a donor stay in the same fold.  
-    Meta-learner *k* is trained on the out-of-fold predictions for the cells outside  
-    fold *k*, and the cells in fold *k* are used only to decide when to stop training.  
-    Because fold *k* holds donors that the meta-learner has not seen, training stops at a  
-    point that carries over to new donors rather than one tuned to the training donors.  
-    At prediction time, the outputs of the five meta-learners are averaged.
-2. **Cached base classifiers.** Each base classifier, one per embedding and fold, is
-
-   saved to disk under a name derived from everything that determines its training:  
-    the embedding, the learner and its settings, the fold, the cell types and the  
-    training cells. A later run that needs the same classifier loads it instead of  
-    training it again. In experiments that compare many combinations of embeddings, this makes the runs much faster.
+1. **Donor-aware meta-learners, one per fold.** The training cells are split into K folds
+   (K = 5 by default, set by `n_folds`), and with `cv_scheme="donor"` all cells of a donor
+   stay in the same fold. Meta-learner *k* is trained on the out-of-fold predictions for
+   the cells outside fold *k*, and the cells in fold *k* are used only to decide when to
+   stop training. Because fold *k* holds donors that the meta-learner has not seen,
+   training stops at a point that carries over to new donors rather than one tuned to the
+   training donors. At prediction time, the outputs of the K meta-learners are averaged.
+2. **Cached base classifiers.** Each base classifier, one per embedding and fold, is saved
+   to disk under a name derived from everything that determines its training: the
+   embedding, the learner and its settings, the fold, the cell types and the training
+   cells. A later run that needs the same classifier loads it instead of training it
+   again. In experiments that compare many combinations of embeddings, this makes the runs
+   much faster.
 
 ## Quick start in Python
 
 The input is an AnnData object whose `.obsm` holds one dense matrix per embedding. Its
 `.obs` holds the cell-type labels, a donor (or batch) column, and a `split` column with
-the values `train` and `test`. The class does not split the data itself: please pass the  
+the values `train` and `test`. The class does not split the data itself: please pass the
 training cells to `fit` and the cells to classify to `predict`.
 
 ```python
@@ -84,7 +83,7 @@ print(stacker.get_method_importance())
 
 `get_method_importance()` reports how much each embedding contributes to the
 meta-learners' decisions, as a share of their total feature importance averaged over
-the five meta-learners.
+the meta-learners.
 
 **Batch feature.** By default, the meta-learner also receives a one-hot encoding of
 each cell's batch. A batch that never appears in training is encoded as all zeros,
@@ -125,10 +124,10 @@ The run writes these files to `--out_dir`:
 
 ## Choosing the base and meta-learners
 
-The base learners and meta learners can be customized. On  
-high-dimensional embeddings, such as foundation-model embeddings with 512 to 2,048  
-dimensions, an MLP base learner can beat XGBoost by 2 percentage points or more. On  
-100-dimensional batch-corrected embeddings, the two are close, and which one is better  
+The base learners and meta-learners can be customized. On
+high-dimensional embeddings, such as foundation-model embeddings with 512 to 2,048
+dimensions, an MLP base learner can beat XGBoost by 2 percentage points or more. On
+100-dimensional batch-corrected embeddings, the two are close, and which one is better
 depends on the dataset. Please consider trying both MLP and XGBoost on your data.
 
 | option | choices | notes |
