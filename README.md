@@ -179,7 +179,7 @@ proba = res["proba"]["xgboost"]       # (n_cells, 167)
 - **Meta-learners.** Two are saved: `xgboost`, which the manuscript reports, and
   `torch_logreg_en`. `res["compartment_label"]` gives the coarse compartment of each call.
 - **Speed.** scVI surgery is the slow step: about 2 minutes per 10,000 cells on one
-  A100 GPU, measured on 734,078 cells.
+  A100 GPU.
 - **CPU and GPU.** The two give the same labels. Their xgboost probabilities can differ
   in the third decimal place: on 14,291 query cells the largest difference was 0.0036,
   with every label identical. The manuscript's results were computed on an A100 GPU. The
